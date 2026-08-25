@@ -27,7 +27,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1
 
 The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
 
-```shell
+```bash
 curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
 ```
 
@@ -42,7 +42,7 @@ Codex CLI can also be installed via the following package managers:
 npm install -g @openai/codex
 ```
 
-```shell
+```bash.zsh
 # Install using Homebrew
 brew install --cask codex
 ```
