@@ -26,7 +26,6 @@ use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
@@ -65,14 +64,14 @@ impl codex_extension_api::ToolContributor for ExtensionEchoContributor {
         &self,
         _session_store: &ExtensionData,
         _thread_store: &ExtensionData,
-    ) -> Vec<Arc<dyn ToolExecutor<ExtensionToolCall>>> {
+    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>> {
         vec![Arc::new(ExtensionEchoExecutor)]
     }
 }
 
 struct ExtensionEchoExecutor;
 
-impl ToolExecutor<ExtensionToolCall> for ExtensionEchoExecutor {
+impl<'call> ToolExecutor<ExtensionToolCall<'call>> for ExtensionEchoExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::namespaced("extension/", "echo")
     }
@@ -100,7 +99,10 @@ impl ToolExecutor<ExtensionToolCall> for ExtensionEchoExecutor {
         })
     }
 
-    fn handle(&self, call: ExtensionToolCall) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, call: ExtensionToolCall<'call>) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(self.handle_call(call))
     }
 }
@@ -108,7 +110,7 @@ impl ToolExecutor<ExtensionToolCall> for ExtensionEchoExecutor {
 impl ExtensionEchoExecutor {
     async fn handle_call(
         &self,
-        call: ExtensionToolCall,
+        call: ExtensionToolCall<'_>,
     ) -> Result<Box<dyn codex_tools::ToolOutput>, codex_tools::FunctionCallError> {
         let arguments: serde_json::Value =
             serde_json::from_str(call.function_arguments()?).expect("test arguments should parse");
@@ -130,11 +132,14 @@ fn extension_tool_test_registry() -> Arc<ExtensionRegistry<Config>> {
 fn test_tool_router(
     step_context: &StepContext,
     mcp_tools: Vec<RegisteredTool>,
-    extension_tool_executors: impl IntoIterator<Item = Arc<dyn ToolExecutor<ExtensionToolCall>>>,
+    extension_tool_executors: impl IntoIterator<
+        Item = Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>,
+    >,
     dynamic_tools: &[DynamicToolSpec],
 ) -> ToolRouter {
     let mut registry = build_core_tool_registry(
         step_context.turn.as_ref(),
+        step_context.turn.model_info(),
         &step_context.environments,
         step_context.mcp.as_ref(),
         /*tool_suggest_candidates*/ None,
@@ -142,6 +147,7 @@ fn test_tool_router(
     );
     let hosted_specs = append_source_tools(
         step_context.turn.as_ref(),
+        step_context.turn.model_info(),
         &mut registry,
         mcp_tools,
         extension_tool_executors,
@@ -149,6 +155,7 @@ fn test_tool_router(
     );
     ToolRouter::from_registry(
         step_context.turn.as_ref(),
+        step_context.turn.model_info(),
         registry,
         hosted_specs,
         &Default::default(),
@@ -183,15 +190,8 @@ async fn parallel_support_does_not_match_namespaced_local_tool_names() -> anyhow
 
     assert_eq!(
         router
-            .tool_runtime(&ToolCall {
-                tool_name: ToolName::plain(parallel_tool_name),
-                call_id: "call-local-tool".to_string(),
-                payload: ToolPayload::Function {
-                    arguments: "{}".to_string(),
-                },
-                encrypted_function_args: None,
-            })
-            .map(|runtime| runtime.tool_name()),
+            .registered_tool(&ToolName::plain(parallel_tool_name))
+            .map(|tool| tool.runtime.tool_name()),
         Some(ToolName::plain(parallel_tool_name))
     );
 
@@ -212,6 +212,8 @@ async fn build_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()
     let tool_name = "create_event".to_string();
 
     let call = ToolRouter::build_tool_call(ResponseItem::FunctionCall {
+        status: None,
+        encrypted_content: None,
         id: None,
         name: tool_name.clone(),
         namespace: Some("mcp__codex_apps__calendar".to_string()),
@@ -244,6 +246,7 @@ async fn build_custom_tool_call_uses_namespace_for_registry_name() -> anyhow::Re
     let tool_name = "exec".to_string();
 
     let call = ToolRouter::build_tool_call(ResponseItem::CustomToolCall {
+        encrypted_content: None,
         id: None,
         status: None,
         call_id: "call-namespace".to_string(),
@@ -273,6 +276,8 @@ async fn build_custom_tool_call_uses_namespace_for_registry_name() -> anyhow::Re
 fn build_tool_call_normalizes_default_function_and_custom_namespaces() -> anyhow::Result<()> {
     for namespace in [None, Some(""), Some(DEFAULT_FUNCTION_NAMESPACE)] {
         let function_call = ToolRouter::build_tool_call(ResponseItem::FunctionCall {
+            status: None,
+            encrypted_content: None,
             id: None,
             name: "lookup".to_string(),
             namespace: namespace.map(str::to_string),
@@ -283,6 +288,7 @@ fn build_tool_call_normalizes_default_function_and_custom_namespaces() -> anyhow
         })?
         .expect("function_call should produce a tool call");
         let custom_call = ToolRouter::build_tool_call(ResponseItem::CustomToolCall {
+            encrypted_content: None,
             id: None,
             status: None,
             call_id: "call-custom".to_string(),
@@ -362,8 +368,8 @@ async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
     assert!(router.tool_supports_parallel(&call));
     assert_eq!(
         router
-            .tool_runtime(&call)
-            .map(|runtime| runtime.tool_name()),
+            .registered_tool(&call.tool_name)
+            .map(|tool| tool.runtime.tool_name()),
         Some(call.tool_name.clone())
     );
 
@@ -378,8 +384,8 @@ async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
     assert!(!router.tool_supports_parallel(&different_server_call));
     assert_eq!(
         router
-            .tool_runtime(&different_server_call)
-            .map(|runtime| runtime.tool_name()),
+            .registered_tool(&different_server_call.tool_name)
+            .map(|tool| tool.runtime.tool_name()),
         Some(different_server_call.tool_name.clone())
     );
 
@@ -392,7 +398,7 @@ async fn mcp_parallel_support_uses_handler_data() -> anyhow::Result<()> {
         encrypted_function_args: None,
     };
     assert!(!router.tool_supports_parallel(&hidden_call));
-    assert!(router.tool_runtime(&hidden_call).is_some());
+    assert!(router.registered_tool(&hidden_call.tool_name).is_some());
 
     let nested_only_call = ToolCall {
         tool_name: ToolName::namespaced("mcp__nested_echo__", "query_with_delay"),
@@ -524,6 +530,7 @@ fn mcp_runtime(tool_info: codex_mcp::ToolInfo) -> RegisteredTool {
     RegisteredTool {
         exposure: runtime.exposure(),
         runtime,
+        model_spec: None,
     }
 }
 
@@ -534,6 +541,8 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
     let turn = Arc::new(turn);
     let step_context = StepContext::for_test(Arc::clone(&turn));
     let history_item = ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
@@ -543,7 +552,11 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
         internal_chat_message_metadata_passthrough: None,
     };
     session
-        .record_conversation_items(&turn, std::slice::from_ref(&history_item))
+        .record_conversation_items(
+            &turn,
+            turn.model_info(),
+            std::slice::from_ref(&history_item),
+        )
         .await;
     let expected_history_item = session
         .clone_history()
@@ -576,6 +589,8 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
     );
 
     let call = ToolRouter::build_tool_call(ResponseItem::FunctionCall {
+        status: None,
+        encrypted_content: None,
         id: None,
         name: "echo".to_string(),
         namespace: Some("extension/".to_string()),
@@ -596,10 +611,12 @@ async fn extension_tool_executors_are_model_visible_and_dispatchable() -> anyhow
         )
         .await?;
 
-    let response = result.into_response();
+    let response = result.into_response().item;
     match response {
-        ResponseInputItem::FunctionCallOutput { call_id, output } => {
-            assert_eq!(call_id, "call-extension");
+        ResponseItem::FunctionCallOutput {
+            call_id, output, ..
+        } => {
+            assert_eq!(call_id.as_deref(), Some("call-extension"));
             let FunctionCallOutputBody::Text(text) = output.body else {
                 panic!("expected text function call output")
             };

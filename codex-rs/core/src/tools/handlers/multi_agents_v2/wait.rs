@@ -28,7 +28,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
         create_wait_agent_tool_v2(self.options)
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -88,8 +91,23 @@ impl Handler {
             )
             .await;
 
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
+        let wait_started = Instant::now();
+        let deadline = wait_started + Duration::from_millis(timeout_ms as u64);
         let outcome = wait_for_activity(&mut activity_rx, pending_activity, deadline).await;
+        // A completed wait may wake for a message, user input, or its timeout.
+        // Dropped waits do not have an observed outcome and are not included.
+        turn.session_telemetry.record_duration(
+            "codex.multi_agent.wait.duration_ms",
+            wait_started.elapsed(),
+            &[(
+                "outcome",
+                match outcome {
+                    WaitOutcome::MailboxActivity => "mailbox",
+                    WaitOutcome::Steered => "steered",
+                    WaitOutcome::TimedOut => "timed_out",
+                },
+            )],
+        );
         let result = WaitAgentResult::from_outcome(outcome, requested_timeout_ms, timeout_ms);
 
         session

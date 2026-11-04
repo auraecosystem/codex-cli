@@ -40,7 +40,7 @@ use rmcp::model::Resource;
 use rmcp::model::ResourceContents;
 use rmcp::model::ResourceTemplate;
 use rmcp::model::ServerCapabilities;
-use rmcp::model::ServerInfo;
+use rmcp::model::ServerConfig;
 use rmcp::model::Tool;
 use rmcp::model::ToolAnnotations;
 use rmcp::transport::StreamableHttpServerConfig;
@@ -118,7 +118,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if std::env::var_os("MCP_TEST_AMBIENT_SECRET").is_some() {
                 return Err("helper inherited ambient secret".into());
             }
-            println!(r#"{{"Proxy-Authorization":"Bearer gateway-token"}}"#);
+            if let Some(invocations) = args.next() {
+                let count = fs::read_to_string(&invocations).unwrap_or_default().len() + 1;
+                fs::write(invocations, "x".repeat(count))?;
+                let header =
+                    if args.next().as_deref() == Some(std::ffi::OsStr::new("--authorization")) {
+                        "Authorization"
+                    } else {
+                        "Proxy-Authorization"
+                    };
+                println!(
+                    r#"{{"{header}":"Bearer gateway-token","X-Helper-Generation":"{count}"}}"#
+                );
+            } else {
+                println!(r#"{{"Proxy-Authorization":"Bearer gateway-token"}}"#);
+            }
             return Ok(());
         }
         _ => {}
@@ -237,8 +251,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 impl ServerHandler for TestToolServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_tool_list_changed()

@@ -1,6 +1,5 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
-
 call :resolve_runfile "__WORKSPACE_ROOT_MARKER__"
 if errorlevel 1 exit /b 1
 set "workspace_root_marker=!resolve_runfile_result!"
